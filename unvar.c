@@ -16,8 +16,13 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
+
 /*
- * .var backup archive decompressor using QuickLZ 1.4.x
+ * .var backup archive decompressor
+ * 
+ * based on
+ *  - QuickLZ 1.4.1               http://www.quicklz.com/
+ *  - L. Peter Deutsch's md5      ghost@aladdin.com
  */
 
 // Remember to define QLZ_COMPRESSION_LEVEL and QLZ_STREAMING_MODE to the same values for the compressor and decompressor
@@ -25,13 +30,15 @@
 #define QLZ_COMPRESSION_LEVEL 2
 #define QLZ_STREAMING_BUFFER 0
 
-// no checksum support, better be safe..
+// no compressed checksum, better be safe..
 #define QLZ_MEMORY_SAFE
 
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "quicklz.h"
+
+#include "md5.h"
 
 //#if QLZ_STREAMING_BUFFER == 0
 //    #error Define QLZ_STREAMING_BUFFER to a non-zero value for this demo
@@ -141,6 +148,12 @@ unsigned int xskipout(FILE *fo, unsigned long long len)
     return fseeko64(fo, len, SEEK_CUR);
 }
 
+/* casted tell */
+long long unsigned int xtell(FILE *f)
+{
+    return (long long unsigned int) ftello64(f);
+}
+
 /* write zero blocks */
 int xwrite_empty_blocks(FILE *fo, unsigned long block_size, unsigned long num, char *buf)
 {
@@ -159,7 +172,7 @@ int xwrite_empty_blocks(FILE *fo, unsigned long block_size, unsigned long num, c
         //sparse: skip n-1 bytes and write 0 to the last one
         unsigned long long total = (unsigned long long) block_size * num - 1;
         if (opt_debug>0)
-            printf("@%llu skipping %lu blocks = %llu bytes\n", fo==NULL?0:ftello64(fo), num, total);
+            printf("@%llu skipping %lu blocks = %llu bytes\n", fo==NULL?0:xtell(fo), num, total);
         char last = 0;
         xskipout(fo, total);
         xwrite(fo, &last, 1);
@@ -221,7 +234,6 @@ int tst_decomp(FILE *ifile, FILE *ofile, int opt_verbose)
 {
     char *src, *dst, *scratch;
     unsigned int len;
-    unsigned int l;
 
     // allocate source buffer
     fseek(ifile, 0, SEEK_END);
@@ -230,7 +242,7 @@ int tst_decomp(FILE *ifile, FILE *ofile, int opt_verbose)
     src = (char*) malloc(len);
 
     // read file and allocate destination buffer
-    l = fread(src, 1, len, ifile);
+    len = fread(src, 1, len, ifile);
     len = qlz_size_decompressed(src);
     if (opt_verbose)
         printf("%s: uncomp block len: %d\n", progname, len);
@@ -248,7 +260,9 @@ int tst_decomp(FILE *ifile, FILE *ofile, int opt_verbose)
 }
 
 /*************************************************************************
-// decompress / var
+// md5 / test
+//
+// basic test: compute a file's md5
 **************************************************************************/
 
 //debug
@@ -267,6 +281,34 @@ int str_to_hexstr(char *str, char *newstr)
     return 1;
 }
 
+
+int tst_md5(FILE *ifile, md5_byte_t *digest)
+{
+    char *file_data;
+    unsigned int len;
+    md5_state_t state;
+
+    // allocate source buffer
+    fseek(ifile, 0, SEEK_END);
+    len = ftell(ifile);
+    fseek(ifile, 0, SEEK_SET);
+
+    file_data = (char*) malloc(len);
+
+    // read file
+    len = fread(file_data, 1, len, ifile);
+    
+    // compute md5
+	md5_init(&state);
+	md5_append(&state, (const md5_byte_t *)file_data, len);
+	md5_finish(&state, digest);
+    
+    return 0;
+}
+
+/*************************************************************************
+// decompress / var
+**************************************************************************/
 
 /*
     VAR file header
@@ -448,7 +490,9 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
     char *scratch = NULL;
     unsigned char m [ sizeof(magic) ];
     unsigned int block_size;
-    unsigned long checksum;
+    md5_state_t md5_state;
+    md5_byte_t md5_digest[16];
+    static const char *const block_salt = ":lzo:";
     
     //VAR ext
     var_header file;    
@@ -469,7 +513,7 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
     block_next_num = block_last_nonzero = 0;
 
 /*
- * Step 1: check magic header, read flags & block size, init checksum
+ * Step 1: check magic header, read flags & block size
  */
     if (xread(fi, m, sizeof(magic),1) != sizeof(magic) ||
         memcmp(m, magic, sizeof(magic)) != 0)
@@ -498,13 +542,8 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
     {
         str_to_hexstr(file.uuid, file_chk_str);
         printf("%s: version_1 %u, version_2 %u, header_len %u, header_end x%llx\n\tfile_flags %lx, file_uuid %s\n",
-                progname, file.version_1, file.version_2, file.len, ftello64(fi), file.flags, file_chk_str);
+                progname, file.version_1, file.version_2, file.len, xtell(fi), file.flags, file_chk_str);
     }
-
-    //init checksum
-    //TODO: VAR checksums...md5 ?
-    checksum = 0;
-    //checksum = adler((unsigned char *)src[thread_id], QLZ_SIZE_COMPRESSED(src[thread_id]), 0x00010000);
 
 /*
  * Step 2: allocate buffer for in-place decompression
@@ -535,7 +574,7 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
             Parse the VAR block header
         */
 
-        block_real_pos = ftello64(fi);
+        block_real_pos = xtell(fi);
         
         var_read_block_header(fi, &block);
 
@@ -552,9 +591,10 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
         
         // block header debug
         if (opt_debug > 0) {
+            printf("%s: reading block\t%lu, pos\t%llu\tin/out: %lu/%lu\n",\
+                progname, block.num, xtell(fi), block.in_len, block.out_len); 
             str_to_hexstr(block.chk, file_chk_str);
-            printf("%s: reading block\t%lu, pos\t%llu\tin/out: %lu/%lu\ncheck: %s\n",\
-                progname, block.num, ftello64(fi), block.in_len, block.out_len, file_chk_str);
+            printf("%s: checksum: %s\n", progname, file_chk_str);
         }
 
         if (block.num != block_next_num)
@@ -631,19 +671,10 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
             Read & decompress the QLZ block
         */
         block_count++;
-        
-/*
-//Debug: dump block cheksum
-str_to_hexstr(block_chk, file_chk_str);
-printf("%s: block check: %s\n", progname, file_chk_str);
-*/
 
         // rewind at the begining of the QLZ block / header
         // 1 x QLZ marker + 4 x comp size + 4 x uncomp size
         xskip(fi, -9);
-        //debug
-        if (opt_debug > 0)
-            printf("QLZ block start x%llx\n", ftello64(fi));
         
         if (opt_debug > 1)
         {
@@ -655,10 +686,6 @@ printf("%s: block check: %s\n", progname, file_chk_str);
 
             // read the compressed block in "in_buf"
             xread(fi, in_buf, block.in_len, 0);
-            
-            //TODO: compressed cheksum ??
-            //checksum = adler(checksum, out, block.out_len);
-            //printf("chk adlr %p\n", checksum);
             
             //real decompress
 
@@ -681,24 +708,37 @@ printf("%s: block check: %s\n", progname, file_chk_str);
                 r = 10;
                 goto err;
             }
-            
+
             // write decompressed block
             xwrite(fo, out_buf, block.out_len);
-            
-            // update checksum
-            //if (flags & 1)
-            //	checksum = qlz_adler32(checksum, out, block.out_len);
+
+            //check block checksum
+            md5_init(&md5_state);
+            md5_append(&md5_state, (const md5_byte_t *)block_salt, 5);
+            md5_append(&md5_state, (const md5_byte_t *)out_buf, block.out_len);
+            md5_finish(&md5_state, md5_digest);
+            if (opt_debug > 0)
+            {
+                str_to_hexstr((char *)md5_digest, file_chk_str);
+                printf("%s: verified: %s\n", progname, file_chk_str);
+            }
+            if (memcmp(block.chk, md5_digest, 16) != 0)
+            {
+                printf("%s: checksum error - block %lu corrupted\n", progname, block.num);
+                r = 11;
+                goto err;
+            }
         }
 
         if (opt_debug > 0)
-            printf("QLZ block end x%llx\n", ftello64(fi));
+            printf("QLZ block end x%llx\n", xtell(fi));
 
         //debug
         if (opt_debug > 1)
         {
             if(block_next_num>1)
             {
-                printf("bail, pos x%llx\n", ftello64(fi));
+                printf("bail, pos x%llx\n", xtell(fi));
                 goto err;
             }
         }
@@ -708,20 +748,6 @@ printf("%s: block check: %s\n", progname, file_chk_str);
 /*
  * Step 4: process footer
  */
-
-    /*
-    // read and verify checksum
-    if (flags & 1)
-    {
-        unsigned long c = xread32(fi);
-        if (c != checksum)
-        {
-            printf("%s: checksum error - data corrupted\n", progname);
-            r = 10;
-            goto err;
-        }
-    }
-    */
     
     //read footer start
     var_read_footer_start(fi, &file);
@@ -731,7 +757,7 @@ printf("%s: block check: %s\n", progname, file_chk_str);
     {
         str_to_hexstr(file.chk, file_chk_str);
         printf("%s: footer: tr1 %lu, tr2 %lu, pos %llx, check %s\n",
-                progname, file.tr1, file.tr2, ftello64(fi), file_chk_str);
+                progname, file.tr1, file.tr2, xtell(fi), file_chk_str);
     }
 
 
@@ -752,7 +778,7 @@ printf("%s: block check: %s\n", progname, file_chk_str);
             // file end
             if (verbose > 0)
                 printf("%s: last map entry (total %lu blocks) at %llx\n",\
-                    progname, block_next_num, ftello64(fi));
+                    progname, block_next_num, xtell(fi));
             
             //write last empty blocks
             block_next_num = block_next_num - 1 - block_last_nonzero;
@@ -770,8 +796,8 @@ printf("%s: block check: %s\n", progname, file_chk_str);
         if (block.num != block_next_num)
         {
             printf("%s: map block number error - expected >= %lu / got %lu (x%llx)\n",\
-                progname, block_next_num, block.num, ftello64(fi));
-            r = 11;
+                progname, block_next_num, block.num, xtell(fi));
+            r = 12;
             goto err;
         }
         block_next_num += 1;
@@ -788,7 +814,7 @@ if (block.out_len != 0x40000)
         // block map debug
         if (opt_debug > 0)
             printf("%s: reading map\t%lu, in/out: %lu/%lu, end @ x%llx\n",\
-                progname, block.num, block.in_len, block.out_len, ftello64(fi));
+                progname, block.num, block.in_len, block.out_len, xtell(fi));
     }
     
     //read footer end
@@ -825,6 +851,7 @@ static void usage(void)
     printf("\ntests:\n");
     printf("\t%s -k    input-file output-file  (block compress)\n", progname);
     printf("\t%s -x    input-file output-file  (block decompress)\n", progname);
+    printf("\t%s -h    input-file              (file md5)\n", progname);
     exit(1);
 }
 
@@ -902,6 +929,7 @@ int main(int argc, char* argv[])
     int opt_verbose = 0;
     int opt_block_compress = 0;
     int opt_block_decompress = 0;
+    int opt_file_md5 = 0;
     const char *in_name = NULL;
     const char *out_name = NULL;
     unsigned int opt_block_size = 0x4000;
@@ -935,6 +963,8 @@ int main(int argc, char* argv[])
             opt_block_compress = 1;
         else if (strcmp(argv[i],"-x") == 0)
             opt_block_decompress = 1;
+        else if (strcmp(argv[i],"-h") == 0)
+            opt_file_md5 = 1;
         else if (argv[i][1] == 'b' && argv[i][2])
         {
             long b = atol(&argv[i][2]);
@@ -959,14 +989,14 @@ int main(int argc, char* argv[])
             progname, opt_var_test, opt_var_decompress);
     if (opt_var_test && i >= argc)
         usage();
-    if (!opt_var_test && i + 2 != argc)
+    if (!opt_var_test && !opt_file_md5 && i + 2 != argc)
         usage();
 
 /*
  * Step 3: process file
  */
 
-    if (!opt_var_test)
+    if (!opt_var_test && !opt_file_md5)
     {
         in_name = argv[i++];
         out_name = argv[i++];
@@ -994,16 +1024,29 @@ int main(int argc, char* argv[])
         xclose(ifile);
         xclose(ofile);
     }
-    else /* opt_var_test */
+    else /* opt_var_test || opt_file_md5 */
     {
         in_name = argv[i++];
         ifile = xopen_fi(in_name);
         
-        r = var_decompress(ifile, NULL, opt_verbose);
-        if (r == 0)
-            printf("%s: %s tested ok (%llu -> %llu bytes)\n",
-                    progname, in_name, total_in, total_out);
-        
+        if (opt_file_md5)
+        {
+            md5_byte_t digest[16];
+            char hex_output[16*2 + 1];
+            
+            tst_md5(ifile, digest);
+            
+            str_to_hexstr((char *)digest, hex_output);
+            printf("%s  %s\n", hex_output, in_name);
+        }
+        else /* opt_var_test */
+        {
+            r = var_decompress(ifile, NULL, opt_verbose);
+            if (r == 0)
+                printf("%s: %s tested ok (%llu -> %llu bytes)\n",
+                        progname, in_name, total_in, total_out);
+        }
+
         xclose(ifile);
     }
     

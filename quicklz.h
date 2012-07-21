@@ -2,25 +2,21 @@
 #define QLZ_HEADER
 
 // Fast data compression library
-// Copyright (C) 2006-2009 Lasse Mikkel Reinhold
+// Copyright (C) 2006-2010 Lasse Mikkel Reinhold
 // lar@quicklz.com
 //
-// QuickLZ can be used for free under the GPL-1 or GPL-2 license (where anything 
+// QuickLZ can be used for free under the GPL-1, -2 or -3 license (where anything 
 // released into public must be open source) or under a commercial license if such 
 // has been acquired (see http://www.quicklz.com/order.html). The commercial license 
 // does not cover derived or ported versions created by third parties under GPL.
+
+// Version 1.4.1 final - april 2010
 
 // You can edit following user settings. Data must be decompressed with the same 
 // setting of QLZ_COMPRESSION_LEVEL and QLZ_STREAMING_BUFFER as it was compressed
 // (see manual). If QLZ_STREAMING_BUFFER > 0, scratch buffers must be initially
 // zeroed out (see manual). First #ifndef makes it possible to define settings from 
 // the outside like the compiler command line or from higher level code.
-
-// BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION 
-// BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION 
-// BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION 
-// BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION 
-// BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION BETA VERSION 
 
 #ifndef QLZ_COMPRESSION_LEVEL
 	//#define QLZ_COMPRESSION_LEVEL 1
@@ -34,7 +30,6 @@
 	//#define QLZ_MEMORY_SAFE
 #endif
 
-// Version 1.4.1 BETA 3 (Jun-2009)
 #define QLZ_VERSION_MAJOR 1
 #define QLZ_VERSION_MINOR 4
 #define QLZ_VERSION_REVISION 1

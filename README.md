@@ -1,8 +1,8 @@
 unvar
 =====
 
-"var" backup archive decompressor based on QuickLZ 1.4.x
---------------------------------------------------------
+"var" backup archive decompressor based on QuickLZ 1.4
+------------------------------------------------------
 
 This is an expiremental attempt at a standalone unpacker for the ".var"
 archive format implemented by some VM backup solutions.
@@ -26,5 +26,7 @@ tool only aims at offline extracting.
 **WARNING** THIS IS EXPERIMENTAL SOFTWARE AND SHOULDN'T BE USED FOR
             ANYTHING BUT TESTING. IT COMES WITH ABSOLUTELY NO WARRANTY.
 
-**WARNING** THERE'S NO KIND OF OUTPUT CHECKING, AS SUCH GENERATED FILES
-            SHOULD BE CONSIDERED UNRELIABLE UNLESS OTHERWISE VERIFIED.
+**WARNING** WHILE INDIVIDUAL DATA BLOCKS AND ARCHIVE METADATA ARE
+            CHEKSUMED THERE IS NO WHOLE OUTPUT FILE VERIFICATION.
+            AS SUCH GENERATED FILES SHOULD BE CONSIDERED UNRELIABLE
+            UNLESS OTHERWISE VERIFIED.
