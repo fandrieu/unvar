@@ -2,3 +2,29 @@ unvar
 =====
 
 "var" backup archive decompressor based on QuickLZ 1.4.x
+--------------------------------------------------------
+
+This is an expiremental attempt at a standalone unpacker for the ".var"
+archive format implemented by some VM backup solutions.
+
+The main motivation for this project is to have a last-resort,
+run-anywhere tool for disaster recovery.
+
+- - -
+
+It can handle "lzo" compressed archives, which actually use the QuickLZ
+algorithm, and as such is based on the GPL'd version of QuickLZ v1.4.
+
+The format itself is a pretty straightforward concatenation of QuickLZ
+data blocks with additional metadata and a global index.
+
+While the format is suited for mounting and online decompression, this
+tool only aims at offline extracting.
+
+- - -
+
+**WARNING** THIS IS EXPERIMENTAL SOFTWARE AND SHOULDN'T BE USED FOR
+            ANYTHING BUT TESTING. IT COMES WITH ABSOLUTELY NO WARRANTY.
+
+**WARNING** THERE'S NO KIND OF OUTPUT CHECKING, AS SUCH GENERATED FILES
+            SHOULD BE CONSIDERED UNRELIABLE UNLESS OTHERWISE VERIFIED.
