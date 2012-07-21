@@ -25,6 +25,12 @@
  *  - L. Peter Deutsch's md5      ghost@aladdin.com
  */
 
+/*
+//TODO: force linking against en old glibc => to run on esx
+#define GLIBC_COMPAT_SYMBOL(FFF) __asm__(".symver " #FFF "," #FFF "@GLIBC_2.2.5");
+GLIBC_COMPAT_SYMBOL(fread)
+*/
+
 // Remember to define QLZ_COMPRESSION_LEVEL and QLZ_STREAMING_MODE to the same values for the compressor and decompressor
 // ...guessed values for var files:
 #define QLZ_COMPRESSION_LEVEL 2
@@ -157,6 +163,9 @@ long long unsigned int xtell(FILE *f)
 /* write zero blocks */
 int xwrite_empty_blocks(FILE *fo, unsigned long block_size, unsigned long num, char *buf)
 {
+    if (num<1)
+        return 1;
+
     if (opt_writezero)
     {
         unsigned long i;
@@ -172,7 +181,8 @@ int xwrite_empty_blocks(FILE *fo, unsigned long block_size, unsigned long num, c
         //sparse: skip n-1 bytes and write 0 to the last one
         unsigned long long total = (unsigned long long) block_size * num - 1;
         if (opt_debug>0)
-            printf("@%llu skipping %lu blocks = %llu bytes\n", fo==NULL?0:xtell(fo), num, total);
+            printf("@%llu skipping %lu %lub blocks = %llu bytes\n",\
+				fo==NULL?0:xtell(fo), num, block_size, total);
         char last = 0;
         xskipout(fo, total);
         xwrite(fo, &last, 1);
@@ -314,26 +324,33 @@ int tst_md5(FILE *ifile, md5_byte_t *digest)
     VAR file header
 */
 typedef struct {
-    unsigned int version_1;
-    unsigned int version_2;
-    unsigned int len;
+    //header
+    unsigned int version;
+    unsigned int bin_len;
+    unsigned int txt_len;
     unsigned long flags;
     unsigned long long size;
     unsigned long block_size;
     char uuid [ 16 ];
-    char chk [ 16 ];
-    unsigned long tr1;
-    unsigned long tr2;
+    //map
+    unsigned long map_len;
+    unsigned long map_len2;
+    char map_chk [ 16 ];
+    //footer
+    char chks [4][16];
+    unsigned long foot1;
+    unsigned long foot2;
+    unsigned long foot3;
 } var_header;
 
 
 int var_read_header(FILE *fi, var_header *header)
 {
     //read header
-    header->version_1 = xread32(fi);
+    header->version = xread32(fi);
     header->flags = xread32(fi);
-    header->version_2 = xread32(fi);
-    header->len = xread32(fi);
+    header->bin_len = xread32(fi);
+    header->txt_len = xread32(fi);
     //skip to uuid = 32 x 2
     xskip(fi, 8);
     //read UUID
@@ -342,29 +359,29 @@ int var_read_header(FILE *fi, var_header *header)
     xskip(fi, 16);
     
     //skip text header, to first block
-    xskip(fi, header->len);
+    xskip(fi, header->txt_len);
     //TODO: parse text header, at least file_size / block_size
     header->size = 0;    
     header->block_size = 0x40000;
     return 1;
 }
 
-int var_read_footer_start(FILE *fi, var_header *header)
+int var_read_map_header(FILE *fi, var_header *header)
 {
     //read footer start
     
     //skip empty
     xskip(fi, 8);
     
-    //read those
-    header->tr1 = xread32(fi);
-    header->tr2 = xread32(fi);
+    //read len ?
+    header->map_len = xread32(fi);
+    header->map_len2 = xread32(fi);
     
     //skip empty
     xskip(fi, 8);
 
-    //read chk
-    xread(fi, header->chk, 16, 1);
+    //read map chk
+    xread(fi, header->map_chk, 16, 1);
 
     //skip to first map entry
     xskip(fi, 0x48);
@@ -373,39 +390,24 @@ int var_read_footer_start(FILE *fi, var_header *header)
 }
 
 
-int var_read_footer_end(FILE *fi)
+int var_read_footer(FILE *fi, var_header *header)
 {
-    //read footer end
+    //read footer
     int i;
-    char chk [ 16 ];
-    char file_chk_str [ 33 ];
-    unsigned long tmp1;
-    unsigned long tmp2;
-    unsigned long tmp3;
-    
-    for (i = 0; i<4; i++) {
-		//read chk
-		xread(fi, chk, 16, 1);
 
-		//skip empty
-		xskip(fi, 16*3);
-		
-		//debug...
-        str_to_hexstr(chk, file_chk_str);
-        printf("%s: footer chk %d: %s\n", progname, i, file_chk_str);
-	}
-	
+    //read 4 different checksums: (md5 16 bytes)
+    //bin header - txt header - map - footer
+    for (i = 0; i<4; i++) {
+        //read chk
+        xread(fi, header->chks[i], 16, 1);
+        xskip(fi, 16*3);
+    }
+
     //read those
-    tmp1 = xread32(fi);
-    tmp2 = xread32(fi); //64....
-    tmp3 = xread32(fi);
+    header->foot1 = xread32(fi);
+    header->foot2 = xread32(fi); //64....
+    header->foot3 = xread32(fi);
 	
-	//debug...
-	printf("%s: footer info %lu / %lu / %lu\n",
-		progname, tmp1, tmp2, tmp3);
-    
-    //should be the end of file...
-    
     return 1;
 }
 
@@ -478,6 +480,29 @@ int var_read_qlz_block_header(FILE *fi, qlz_block_header *header)
 }
 
 
+/*
+
+    TEMP checksum tool...
+*/
+int file_check_part(FILE *fi, unsigned long len, char *value)
+{
+    md5_state_t md5_state;
+    md5_byte_t md5_digest[16];
+    char tmp_buf[1024];
+    unsigned long len_done;
+    unsigned long len_todo = len;
+    
+    md5_init(&md5_state);
+    while (len_todo > 0) {
+        len_done = fread(tmp_buf, 1, (len_todo>1024)?1024:len_todo, fi);
+        md5_append(&md5_state, (const md5_byte_t *)tmp_buf, len_done);
+        len_todo -= len_done;
+    }
+    md5_finish(&md5_state, md5_digest);
+    
+    return memcmp(value, md5_digest, 16);
+}
+
 
 /*
     VAR file decompress
@@ -485,6 +510,7 @@ int var_read_qlz_block_header(FILE *fi, qlz_block_header *header)
 int var_decompress(FILE *fi, FILE *fo, int verbose)
 {
     int r = 0;
+	int ok;
     char *in_buf = NULL;
     char *out_buf = NULL;
     char *scratch = NULL;
@@ -541,8 +567,8 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
     if (verbose > 0)
     {
         str_to_hexstr(file.uuid, file_chk_str);
-        printf("%s: version_1 %u, version_2 %u, header_len %u, header_end x%llx\n\tfile_flags %lx, file_uuid %s\n",
-                progname, file.version_1, file.version_2, file.len, xtell(fi), file.flags, file_chk_str);
+        printf("%s: version %u, bin_len %u, txt_len %u, header_end x%llx\n\tfile_flags %lx, file_uuid %s\n",
+                progname, file.version, file.bin_len, file.txt_len, xtell(fi), file.flags, file_chk_str);
     }
 
 /*
@@ -611,14 +637,14 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
             if (opt_debug > 0)
                 printf("%s: writing %ld empty blocks\n", progname, block_next_num);
             
-            xwrite_empty_blocks(fo, block_size, block_next_num, out_buf);
+            xwrite_empty_blocks(fo, block.out_len, block_next_num, out_buf);
             
             //record empty blocks + reset next_num
             block_empty += block_next_num;
             block_next_num = block.num;
         }
         block_next_num += 1;
-        
+
         // sanity check of the size values
         if (block.in_len-9 > block_size || block.out_len > block_size ||
             block.in_len == 0 || block.in_len-9 > block.out_len)
@@ -730,9 +756,6 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
             }
         }
 
-        if (opt_debug > 0)
-            printf("QLZ block end x%llx\n", xtell(fi));
-
         //debug
         if (opt_debug > 1)
         {
@@ -746,26 +769,36 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
     }
 
 /*
- * Step 4: process footer
+ * Step 4: process map / index
  */
     
-    //read footer start
-    var_read_footer_start(fi, &file);
+    //read map header
+    var_read_map_header(fi, &file);
 
-    //footer debug
+    //debug
     if (verbose > 0)
     {
-        str_to_hexstr(file.chk, file_chk_str);
-        printf("%s: footer: tr1 %lu, tr2 %lu, pos %llx, check %s\n",
-                progname, file.tr1, file.tr2, xtell(fi), file_chk_str);
+        str_to_hexstr(file.map_chk, file_chk_str);
+        printf("%s: map: len %lu, len2 %lu, pos %llx, check %s\n",
+                progname, file.map_len, file.map_len2, xtell(fi), file_chk_str);
     }
 
+	
+	//read all before parsing to verify...
+	//TODO: compute while reading blocks ? anyway it's useless...
+	if (opt_debug>0)
+	{
+		ok = file_check_part(fi, file.map_len, file.map_chk);
+		fseeko64(fi, -1 * file.map_len, SEEK_CUR);
+		printf("%s: map checksum %s\n", progname, (ok==0)?"OK":"ERROR");
+	}
+    
 
 /*
  * Step 5: process blocks map
  */
 //TODO: check // blocks...
-    
+
     block_next_num = 0;
     block_last_nonzero = -1;
     for(;;)
@@ -801,6 +834,7 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
             goto err;
         }
         block_next_num += 1;
+        block_size = block.out_len; //store previous block size
         
         //TODO check // real last block processed
         if (block.in_len > 0)
@@ -808,18 +842,57 @@ int var_decompress(FILE *fi, FILE *fo, int verbose)
 
 //debug
 //if (block.out_len != block_size)
-if (block.out_len != 0x40000)
-    printf("%s:different block_size: %lu\n", progname, block.out_len);
+if (block.out_len > 0x40000)
+    printf("%s: WARNING: block_size too large: %lu\n", progname, block.out_len);
 
         // block map debug
         if (opt_debug > 0)
             printf("%s: reading map\t%lu, in/out: %lu/%lu, end @ x%llx\n",\
                 progname, block.num, block.in_len, block.out_len, xtell(fi));
     }
+
+    //read footer
+    var_read_footer(fi, &file);
+    //should be the end of file...
+
+	//debug...
+    if (verbose > 0)
+    {   
+        const char *const chk_names[4] = {"bin", "txt", "map", "foot"};
+        int i;
+        for (i = 0; i<4; i++) {
+            str_to_hexstr(file.chks[i], file_chk_str);
+            printf("%s: %s chk: %s\n", progname, chk_names[i], file_chk_str);
+        }
+        printf("%s: footer info %lu / %lu / %lu\n",
+            progname, file.foot1, file.foot2, file.foot3);
+    }
     
-    //read footer end
-    var_read_footer_end(fi);
-    
+    //TODO: check those md5 before reading the file...
+    //...but that implies reading the file end first
+    if (opt_debug > 0)
+    {
+        //chk 0: bin header: from start for bin_len
+        fseeko64(fi, 0, SEEK_SET);
+        ok = file_check_part(fi, file.bin_len, file.chks[0]);
+        printf("%s: binary header checksum %s\n", progname, (ok==0)?"OK":"ERROR");
+
+        //chk 1: txt header: from bin header for txt_len
+        ok = file_check_part(fi, file.txt_len, file.chks[1]);
+        printf("%s: text header checksum %s\n", progname, (ok==0)?"OK":"ERROR");
+        
+        //chk 2: map dupe: full map...
+        ok = memcmp(file.map_chk, file.chks[2], 16);
+        printf("%s: map dupe checksum %s\n", progname, (ok==0)?"OK":"ERROR");
+        
+        //chk 3: footer: last 12 bytes
+        fseeko64(fi, -12, SEEK_END);
+        ok = file_check_part(fi, 12, file.chks[3]);
+        printf("%s: footer checksum %s\n", progname, (ok==0)?"OK":"ERROR");
+    }
+
+
+
     if (verbose > 0)
         printf("%s: blocks decomp / empty / total: %lu / %lu / %lu\n",\
             progname, block_count, block_empty, block_count + block_empty);
@@ -844,7 +917,6 @@ static void usage(void)
     printf("\t%s [-d]  input-file output-file  (var decompress)\n", progname);
     printf("\t%s -t    input-file              (var test)\n", progname);
     printf("\noptions:\n");
-    printf("\t-b          var block size\n");
     printf("\t-Z          don't write sparse file / write all zeros\n");
     printf("\t-v          be more verbose\n");
     printf("\t--debug     output a lot of debug info\n");
@@ -932,7 +1004,6 @@ int main(int argc, char* argv[])
     int opt_file_md5 = 0;
     const char *in_name = NULL;
     const char *out_name = NULL;
-    unsigned int opt_block_size = 0x4000;
     const char *s;
 
 /*
@@ -965,17 +1036,6 @@ int main(int argc, char* argv[])
             opt_block_decompress = 1;
         else if (strcmp(argv[i],"-h") == 0)
             opt_file_md5 = 1;
-        else if (argv[i][1] == 'b' && argv[i][2])
-        {
-            long b = atol(&argv[i][2]);
-            if (b >= 1024L && b <= 8*1024*1024L)
-                opt_block_size = (unsigned int) b;
-            else
-            {
-                printf("%s: invalid block_size in option `%s'.\n", progname, argv[i]);
-                usage();
-            }
-        }
         else if (strcmp(argv[i],"--debug") == 0)
             opt_debug += 1;
         else if (strcmp(argv[i],"-Z") == 0)
@@ -984,9 +1044,6 @@ int main(int argc, char* argv[])
             usage();
         i++;
     }
-    if (opt_debug > 0)
-        printf("prog %s, test %d, decomp, %d\n",\
-            progname, opt_var_test, opt_var_decompress);
     if (opt_var_test && i >= argc)
         usage();
     if (!opt_var_test && !opt_file_md5 && i + 2 != argc)
