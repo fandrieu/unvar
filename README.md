@@ -1,5 +1,5 @@
-unvar
-=====
+unvar & unvar.py
+================
 
 "var" backup archive decompressor based on QuickLZ 1.4
 ------------------------------------------------------
@@ -20,6 +20,12 @@ data blocks with additional metadata and a global index.
 
 While the format is suited for mounting and online decompression, this
 tool only aims at offline extracting.
+
+- - -
+
+There's also a python2 version that relies on the quicklz binary library
+and a simple ctypes python wrapper.
+It's a separated implementation that can be used instead of the C unvar.
 
 - - -
 
